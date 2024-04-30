@@ -114,3 +114,17 @@ def two_fractions_from_phasor(
         distances_to_first_component / total_distance_between_components
     )
     return 1 - fraction_of_second_component, fraction_of_second_component
+
+def multiple_components_from_phasor(real, imag, real_components, imaginary_components):
+    # projected_real, projected_imag = project_phasor_to_line(
+    #     real, imag, real_components, imaginary_components
+    # )
+    components_coordinates = numpy.array([real_components, imaginary_components])
+    real = numpy.atleast_1d(real)
+    imag = numpy.atleast_1d(imag)
+    fractions = []
+    for element in zip(real,imag):
+        row_fractions = numpy.linalg.solve(components_coordinates, element)
+        fractions.append(row_fractions)
+    fractions = numpy.stack(fractions, axis=-1)
+    return fractions
