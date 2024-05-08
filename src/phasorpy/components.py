@@ -113,18 +113,69 @@ def two_fractions_from_phasor(
     fraction_of_second_component = (
         distances_to_first_component / total_distance_between_components
     )
-    return 1 - fraction_of_second_component, fraction_of_second_component
+    return tuple(numpy.array([1 - fraction_of_second_component,fraction_of_second_component]))
 
-def multiple_components_from_phasor(real, imag, real_components, imaginary_components):
-    # projected_real, projected_imag = project_phasor_to_line(
-    #     real, imag, real_components, imaginary_components
-    # )
-    components_coordinates = numpy.array([real_components, imaginary_components])
+def four_fractions_from_phasor(real, imag, real_components, imaginary_components, components = 4):
+    if real.shape != imag.shape:
+        raise ValueError(f'{real.shape=} != {imag.shape=}')
+    if real_components.shape != imaginary_components.shape:
+        raise ValueError(f'{real_components.shape=} != {imaginary_components.shape=}')
     real = numpy.atleast_1d(real)
     imag = numpy.atleast_1d(imag)
-    fractions = []
-    for element in zip(real,imag):
-        row_fractions = numpy.linalg.solve(components_coordinates, element)
-        fractions.append(row_fractions)
-    fractions = numpy.stack(fractions, axis=-1)
-    return fractions
+    independent_arrays = numpy.concatenate([real, imag], axis =0)
+    if components == 3:
+        if real_components.ndim == 1:
+            real_components = real_components[numpy.newaxis, :]
+            imaginary_components = imaginary_components[numpy.newaxis, :]
+        ones_row = numpy.ones(real_components.shape)
+        components_coordinates = numpy.concatenate((real_components, imaginary_components, ones_row), axis=0)
+        ones_array = numpy.ones(real.shape)
+        independent_arrays = numpy.concatenate([independent_arrays, ones_array], axis=0)
+    else:
+        components_coordinates = numpy.concatenate([real_components, imaginary_components], axis= 0)
+    fractions = numpy.linalg.solve(components_coordinates, independent_arrays)
+    return tuple(numpy.array(row) for row in fractions)
+
+def fractions_from_phasor(real, imag, real_components, imaginary_components, components = 4, axis = 0):
+    if real.shape != imag.shape:
+        raise ValueError(f'{real.shape=} != {imag.shape=}')
+    if real_components.shape != imaginary_components.shape:
+        raise ValueError(f'{real_components.shape=} != {imaginary_components.shape=}')
+    real = numpy.atleast_1d(real)
+    imag = numpy.atleast_1d(imag)
+    independent_arrays = numpy.concatenate([real, imag], axis = axis)
+    if components == 3:
+        if real_components.ndim == 1:
+            real_components = real_components[numpy.newaxis, :]
+            imaginary_components = imaginary_components[numpy.newaxis, :]
+        ones_row = numpy.ones(real_components.shape)
+        components_coordinates = numpy.concatenate((real_components, imaginary_components, ones_row), axis = axis)
+        ones_array = numpy.ones(real.shape)
+        independent_arrays = numpy.concatenate([independent_arrays, ones_array], axis = axis)
+        independent_arrays = numpy.tile(independent_arrays[..., None], (components,))
+    else:
+        components_coordinates = numpy.concatenate([real_components, imaginary_components], axis = axis)
+        independent_arrays = numpy.tile(independent_arrays.T[..., None], (components,))
+    fractions = numpy.linalg.solve(components_coordinates, independent_arrays)
+    return tuple(fractions[(..., 0)].T)
+
+def new_fractions_from_phasor(real, imag, real_components, imaginary_components, components = 4, axis = 0):
+    if real.shape != imag.shape:
+        raise ValueError(f'{real.shape=} != {imag.shape=}')
+    if real_components.shape != imaginary_components.shape:
+        raise ValueError(f'{real_components.shape=} != {imaginary_components.shape=}')
+    real = numpy.atleast_1d(real)
+    imag = numpy.atleast_1d(imag)
+    independent_arrays = numpy.concatenate([real, imag], axis = axis)
+    if real_components.ndim == 1:
+        real_components = real_components[numpy.newaxis, :]
+        imaginary_components = imaginary_components[numpy.newaxis, :]
+    components_coordinates = numpy.concatenate([real_components, imaginary_components], axis = axis)
+    if components_coordinates.shape[0] != components_coordinates.shape[1]:
+        ones_row = numpy.ones(real_components.shape)
+        components_coordinates = numpy.concatenate((real_components, imaginary_components, ones_row), axis = axis)
+        ones_array = numpy.ones(real.shape)
+        independent_arrays = numpy.concatenate([independent_arrays, ones_array], axis = axis)
+    independent_arrays = numpy.tile(independent_arrays.T[..., None], (components,))
+    fractions = numpy.linalg.solve(components_coordinates, independent_arrays)
+    return tuple(fractions[(..., 0)].T)
