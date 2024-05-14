@@ -12,7 +12,7 @@ An introduction to component analysis in the phasor space.
 import matplotlib.pyplot as plt
 import numpy
 
-from phasorpy.components import two_fractions_from_phasor
+from phasorpy.components import fractions_from_phasor, fractions_from_phasor
 from phasorpy.phasor import phasor_from_lifetime
 from phasorpy.plot import PhasorPlot
 
@@ -47,9 +47,9 @@ plot.show()
 (
     fraction_of_first_component,
     fraction_of_second_component,
-) = two_fractions_from_phasor(real, imag, components_real, components_imag)
-print(f'Fraction of first component:  {fraction_of_first_component:.3f}')
-print(f'Fraction of second component: {fraction_of_second_component:.3f}')
+) = fractions_from_phasor(real, imag, components_real, components_imag)
+print(f'Fraction of first component:  {fraction_of_first_component[0]:.3f}')
+print(f'Fraction of second component: {fraction_of_second_component[0]:.3f}')
 
 # %%
 # Contribution of two known components in multiple phasors
@@ -77,7 +77,7 @@ plot.show()
 (
     fraction_from_first_component,
     fraction_from_second_component,
-) = two_fractions_from_phasor(real, imag, components_real, components_imag)
+) = fractions_from_phasor(real, imag, components_real, components_imag)
 fig, ax = plt.subplots()
 ax.hist(
     fraction_from_first_component.flatten(),
@@ -99,6 +99,11 @@ ax.set_ylabel('Counts')
 ax.legend()
 plt.tight_layout()
 plt.show()
+
+# %%
+# Multi-component analysis
+# ------------------------
+
 
 # %%
 # sphinx_gallery_thumbnail_number = 2
