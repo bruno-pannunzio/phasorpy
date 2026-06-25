@@ -4,9 +4,26 @@ import numpy
 import pytest
 from numpy.testing import assert_allclose
 
-from phasorpy.cluster import phasor_cluster_gmm
+from phasorpy.cluster import (
+    phasor_cluster_gmm,
+    phasor_cluster_hdbscan,
+    phasor_cluster_kmeans,
+)
 
 rng = numpy.random.default_rng(42)
+
+
+def two_cluster_data():
+    """Return synthetic phasor coordinates with two clusters."""
+    real1, imag1 = rng.multivariate_normal(
+        [0.2, 0.3], [[3e-3, 1e-3], [1e-3, 1e-3]], 2**15
+    ).T
+    real2, imag2 = rng.multivariate_normal(
+        [0.3, 0.5], [[1e-3, -0.5e-3], [-0.5e-3, 1e-3]], 2**14
+    ).T
+    real = numpy.concatenate([real1, real2])
+    imag = numpy.concatenate([imag1, imag2])
+    return real, imag
 
 
 @pytest.mark.parametrize('clusters', [1, 2, 3])
@@ -104,6 +121,94 @@ def test_phasor_cluster_gmm_column_stack(real, imag):
     center_real, center_imag, *_ = phasor_cluster_gmm(real, imag, clusters=1)
     assert len(center_real) == 1
     assert len(center_imag) == 1
+
+
+@pytest.mark.parametrize('clusters', [1, 2, 3])
+@pytest.mark.parametrize('sort', ['polar', 'phasor', 'area'])
+def test_phasor_cluster_kmeans_basic(clusters, sort):
+    real, imag = two_cluster_data()
+    center_real, center_imag, radius_major, radius_minor, angle = (
+        phasor_cluster_kmeans(
+            real, imag, clusters=clusters, sort=sort, random_state=42
+        )
+    )
+    assert len(center_real) == clusters
+    assert len(center_imag) == clusters
+    assert len(radius_major) == clusters
+    assert len(radius_minor) == clusters
+    assert len(angle) == clusters
+    if clusters == 2:
+        assert_allclose(center_real, [0.2, 0.3], atol=0.02)
+        assert_allclose(center_imag, [0.3, 0.5], atol=0.02)
+
+
+def test_phasor_cluster_kmeans_invalid():
+    # shape mismatch
+    with pytest.raises(ValueError):
+        phasor_cluster_kmeans([1, 2, 3], [1, 2])
+
+    # invalid sort method
+    with pytest.raises(ValueError):
+        phasor_cluster_kmeans([1, 2], [1, 2], clusters=2, sort='invalid')
+
+    # clusters < 1
+    with pytest.raises(ValueError):
+        phasor_cluster_kmeans([1, 2, 3], [1, 2, 3], clusters=0)
+
+    # insufficient data points for clusters
+    with pytest.raises(ValueError):
+        phasor_cluster_kmeans([1, 2], [1, 2], clusters=3)
+
+    # sigma <= 0
+    with pytest.raises(ValueError):
+        phasor_cluster_kmeans([1, 2], [1, 2], sigma=-1.0)
+
+
+@pytest.mark.parametrize('sort', ['polar', 'phasor', 'area'])
+def test_phasor_cluster_hdbscan_basic(sort):
+    real, imag = two_cluster_data()
+    center_real, center_imag, radius_major, radius_minor, angle = (
+        phasor_cluster_hdbscan(real, imag, sort=sort, min_cluster_size=1000)
+    )
+    assert len(center_real) == 2
+    assert len(center_imag) == 2
+    assert len(radius_major) == 2
+    assert len(radius_minor) == 2
+    assert len(angle) == 2
+    assert_allclose(sorted(center_real), [0.2, 0.3], atol=0.02)
+    assert_allclose(sorted(center_imag), [0.3, 0.5], atol=0.02)
+
+
+def test_phasor_cluster_hdbscan_invalid():
+    # shape mismatch
+    with pytest.raises(ValueError):
+        phasor_cluster_hdbscan([1, 2, 3], [1, 2])
+
+    # invalid sort method, with two well-separated clusters
+    real = numpy.concatenate(
+        [rng.normal(0.2, 0.01, 100), rng.normal(0.8, 0.01, 100)]
+    )
+    imag = numpy.concatenate(
+        [rng.normal(0.2, 0.01, 100), rng.normal(0.8, 0.01, 100)]
+    )
+    with pytest.raises(ValueError):
+        phasor_cluster_hdbscan(real, imag, sort='invalid', min_cluster_size=20)
+
+    # sigma <= 0
+    with pytest.raises(ValueError):
+        phasor_cluster_hdbscan([1, 2], [1, 2], sigma=-1.0)
+
+    # no valid data points
+    with pytest.raises(ValueError):
+        phasor_cluster_hdbscan([numpy.nan], [numpy.nan])
+
+
+def test_phasor_cluster_hdbscan_all_noise():
+    # all points classified as noise returns empty tuples
+    real = [0.0, 0.3, 0.0, 0.3, 0.15, 0.6]
+    imag = [0.0, 0.0, 0.3, 0.3, 0.6, 0.15]
+    result = phasor_cluster_hdbscan(real, imag)
+    assert result == ((), (), (), (), ())
 
 
 # mypy: allow-untyped-defs, allow-untyped-calls

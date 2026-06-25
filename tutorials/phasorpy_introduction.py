@@ -445,19 +445,30 @@ plot_phasor(
 # Find clusters
 # -------------
 #
-# The :py:mod:`phasorpy.cluster` module provides functions to fit clusters
-# to phasor coordinates.
+# The :py:mod:`phasorpy.cluster` module provides functions to fit elliptical
+# clusters to phasor coordinates using different clustering algorithms:
+#
+# - :py:func:`phasor_cluster_gmm` using a Gaussian mixture model (GMM),
+# - :py:func:`phasor_cluster_kmeans` using k-means clustering, and
+# - :py:func:`phasor_cluster_hdbscan` using density-based HDBSCAN clustering.
+#
+# All three functions return the same ellipse parameters, which can be used
+# to plot and mask the clusters with the elliptical cursor functions.
 #
 # Automatically find the two elliptical clusters in the phasor space using
 # a Gaussian mixture model and plot them in distinct colors:
 
-from phasorpy.cluster import phasor_cluster_gmm
+from phasorpy.cluster import (
+    phasor_cluster_gmm,
+    phasor_cluster_hdbscan,
+    phasor_cluster_kmeans,
+)
 
 center_real, center_imag, radius, radius_minor, angle = phasor_cluster_gmm(
     real, imag, clusters=2
 )
 
-plot = PhasorPlot(allquadrants=True, title='Elliptical clusters')
+plot = PhasorPlot(allquadrants=True, title='Elliptical clusters (GMM)')
 plot.hist2d(real, imag, cmap='Greys')
 plot.cursor(
     center_real,
@@ -470,7 +481,51 @@ plot.cursor(
 plot.show()
 
 # %%
-# Use the elliptical clusters to mask regions of interest in the phasor space:
+# Alternatively, partition the phasor coordinates into a fixed number of
+# clusters using k-means clustering. The ellipse parameters are derived from
+# the covariance of the coordinates assigned to each cluster:
+
+km_real, km_imag, km_radius, km_radius_minor, km_angle = phasor_cluster_kmeans(
+    real, imag, clusters=2
+)
+
+plot = PhasorPlot(allquadrants=True, title='Elliptical clusters (k-means)')
+plot.hist2d(real, imag, cmap='Greys')
+plot.cursor(
+    km_real,
+    km_imag,
+    radius=km_radius,
+    radius_minor=km_radius_minor,
+    angle=km_angle,
+    color=CATEGORICAL[:2],
+)
+plot.show()
+
+# %%
+# Unlike GMM and k-means, the density-based HDBSCAN algorithm determines the
+# number of clusters automatically and classifies sparse points as noise.
+# The ``min_cluster_size`` parameter controls the smallest grouping
+# considered a cluster:
+
+hdb_real, hdb_imag, hdb_radius, hdb_radius_minor, hdb_angle = (
+    phasor_cluster_hdbscan(real, imag, min_cluster_size=100)
+)
+
+plot = PhasorPlot(allquadrants=True, title='Elliptical clusters (HDBSCAN)')
+plot.hist2d(real, imag, cmap='Greys')
+plot.cursor(
+    hdb_real,
+    hdb_imag,
+    radius=hdb_radius,
+    radius_minor=hdb_radius_minor,
+    angle=hdb_angle,
+    color=CATEGORICAL[: len(hdb_real)],
+)
+plot.show()
+
+# %%
+# Use the GMM elliptical clusters to mask regions of interest in the phasor
+# space:
 
 from phasorpy.cursor import mask_from_elliptic_cursor
 
