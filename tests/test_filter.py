@@ -9,6 +9,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from phasorpy.datasets import fetch
 from phasorpy.filter import (
+    _pawflim,
     phasor_filter_gaussian,
     phasor_filter_median,
     phasor_filter_pawflim,
@@ -1345,6 +1346,121 @@ def test_phasor_filter_pawflim_errors():
     # number of harmonics does not match first axis of `real` and `imag`
     with pytest.raises(ValueError):
         phasor_filter_pawflim([1], [[1], [1]], [[1], [1]], harmonic=[1, 2, 3])
+
+
+def test_pawflim_reference():
+    """Test internal _pawflim against pawFLIM library expected output.
+
+    The expected values were generated with ``pawflim.pawflim`` version
+    1.0.4, anchoring the dependency-free reimplementation to the original
+    library. ``_pawflim`` operates on Fourier coefficients, where the first
+    axis contains harmonics ``(0, n, 2n)`` and the remaining axes are
+    spatial.
+    """
+    # 1D case, two decomposition levels
+    data = numpy.array(
+        [
+            [10, 4, 16, 9, 25, 1, 12, 7],
+            [
+                4 + 2j,
+                1 + 0.5j,
+                6 + 3j,
+                3 + 1j,
+                9 + 4j,
+                0.2 + 0.1j,
+                5 + 2j,
+                2 + 1j,
+            ],
+            [
+                3 + 1j,
+                0.5 + 0.2j,
+                5 + 2j,
+                2 + 0.8j,
+                8 + 3j,
+                0.1 + 0.05j,
+                4 + 1j,
+                1 + 0.4j,
+            ],
+        ],
+        dtype=numpy.complex128,
+    )
+    expected = numpy.array(
+        [
+            [
+                8.6875,
+                10.1875,
+                11.3125,
+                11.9375,
+                12.3125,
+                10.8125,
+                9.6875,
+                9.0625,
+            ],
+            [
+                3.1375 + 1.475j,
+                3.625 + 1.6875j,
+                4.0125 + 1.85j,
+                4.275 + 1.8875j,
+                4.4125 + 1.925j,
+                3.925 + 1.7125j,
+                3.5375 + 1.55j,
+                3.275 + 1.5125j,
+            ],
+            [
+                2.2875 + 0.790625j,
+                2.75 + 1.0125j,
+                3.1625 + 1.215625j,
+                3.45 + 1.29375j,
+                3.6125 + 1.321875j,
+                3.15 + 1.1j,
+                2.7375 + 0.896875j,
+                2.45 + 0.81875j,
+            ],
+        ]
+    )
+    assert_allclose(_pawflim(data, n_sigmas=2.0, levels=2), expected)
+
+    # 2D case with two distinct regions; some detail coefficients survive
+    mean = numpy.array(
+        [
+            [40.0, 38.0, 6.0, 5.0],
+            [42.0, 39.0, 7.0, 4.0],
+            [41.0, 37.0, 5.0, 6.0],
+            [39.0, 40.0, 6.0, 5.0],
+        ]
+    )
+    phasor1 = numpy.where(numpy.arange(4) < 2, 0.2 + 0.3j, 0.6 + 0.4j)
+    phasor2 = numpy.where(numpy.arange(4) < 2, 0.1 + 0.15j, 0.35 + 0.25j)
+    data = numpy.stack(
+        [mean.astype(numpy.complex128), mean * phasor1, mean * phasor2]
+    )
+    out = _pawflim(data, n_sigmas=2.0, levels=2)
+    # intensity is preserved within each homogeneous region
+    assert_allclose(out[0, :, 0], 40.0, atol=0.5)
+    # the two regions remain distinct (edge detail not averaged away)
+    assert not numpy.allclose(out[1] / out[0], (out[1] / out[0]).mean())
+    expected_mean = numpy.array(
+        [
+            [40.0, 39.0, 5.75, 5.25],
+            [40.25, 38.875, 5.875, 5.0],
+            [40.0, 39.0, 5.75, 5.25],
+            [39.75, 39.125, 5.625, 5.5],
+        ]
+    )
+    assert_allclose(out[0].real, expected_mean)
+    assert_allclose(out[1, 0, 0], 8.025 + 12.00625j)
+    assert_allclose(out[1, 0, 3], 3.125 + 2.09375j)
+    assert_allclose(out[2, 0, 0], 4.015625 + 6.00625j)
+
+
+def test_pawflim_levels_zero_identity():
+    """Test _pawflim is reproduced by phasor_filter_pawflim with levels=0."""
+    mean = numpy.array([[1.0, 1.0], [1.0, 1.0]])
+    real = numpy.ones((2, 2, 2)) * 0.5
+    imag = numpy.ones((2, 2, 2)) * 0.4
+    out = phasor_filter_pawflim(mean, real, imag, harmonic=[1, 2], levels=0)
+    assert_array_equal(out[1], real)
+    assert_array_equal(out[2], imag)
 
 
 def test_phasor_threshold():

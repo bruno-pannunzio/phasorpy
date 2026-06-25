@@ -42,6 +42,7 @@ import numpy
 
 from ._phasorpy import (
     _median_filter_2d,
+    _phasor_filter_pawflim,
     _phasor_from_signal_vector,
     _phasor_threshold_closed,
     _phasor_threshold_mean_closed,
@@ -491,6 +492,7 @@ def phasor_filter_pawflim(
     levels: int = 1,
     harmonic: Sequence[int] | None = None,
     skip_axis: int | Sequence[int] | None = None,
+    num_threads: int | None = None,
 ) -> tuple[NDArray[Any], NDArray[Any], NDArray[Any]]:
     """Return pawFLIM wavelet-filtered phasor coordinates.
 
@@ -528,6 +530,11 @@ def phasor_filter_pawflim(
         Axes in `mean` to exclude from filtering.
         By default, all axes of `mean` are filtered.
         The harmonics axis, if present, is always excluded.
+    num_threads : int, optional
+        Number of OpenMP threads to use for parallelization.
+        By default, multithreading is disabled.
+        If zero, up to half of logical CPUs are used.
+        OpenMP may not be available on all platforms.
 
     Returns
     -------
@@ -591,8 +598,6 @@ def phasor_filter_pawflim(
             [0.45, 0.45]]])
 
     """
-    from pawflim import pawflim  # type: ignore[import-untyped]
-
     if sigma < 0:
         msg = f'{sigma=} < 0'
         raise ValueError(msg)
@@ -601,6 +606,8 @@ def phasor_filter_pawflim(
         raise ValueError(msg)
     if levels == 0:
         return numpy.asarray(mean), numpy.asarray(real), numpy.asarray(imag)
+
+    num_threads = number_threads(num_threads)
 
     mean = numpy.asarray(mean, dtype=numpy.float64, copy=True)
     real = numpy.asarray(real, dtype=numpy.float64, copy=True)
@@ -679,8 +686,11 @@ def phasor_filter_pawflim(
                 real[n2][full_index] + 1j * imag[n2][full_index]
             )
 
-            complex_phasor = pawflim(
-                complex_phasor, n_sigmas=sigma, levels=levels
+            complex_phasor = _pawflim(
+                complex_phasor,
+                n_sigmas=sigma,
+                levels=levels,
+                num_threads=num_threads,
             )
 
             for i, idx in enumerate([n, n2]):
@@ -698,6 +708,145 @@ def phasor_filter_pawflim(
         imag = numpy.asarray(numpy.divide(imag_filtered, mean_expanded))
 
     return mean, real, imag
+
+
+def _modwt_1d(
+    data: NDArray[Any], level: int, axis: int
+) -> tuple[NDArray[Any], NDArray[Any]]:
+    """Return approximation and detail of 1D maximal overlap DWT.
+
+    Uses an unnormalized Haar wavelet, for which the transform is
+    equivalent to a binning operation.
+
+    """
+    shifted = numpy.roll(data, -(1 << level), axis=axis)
+    return data + shifted, shifted - data
+
+
+def _undo_1d_modwt(
+    approx: NDArray[Any], detail: NDArray[Any]
+) -> tuple[NDArray[Any], NDArray[Any]]:
+    """Return the two coefficients that were averaged and differenced."""
+    return 0.5 * approx - 0.5 * detail, 0.5 * approx + 0.5 * detail
+
+
+def _imodwt_1d(
+    approx: NDArray[Any], detail: NDArray[Any], level: int, axis: int
+) -> NDArray[Any]:
+    """Return inverse 1D maximal overlap DWT."""
+    left, right = _undo_1d_modwt(approx, detail)
+    return (left + numpy.roll(right, 1 << level, axis=axis)) / 2
+
+
+def _modwt_nd(
+    data: NDArray[Any], level: int, axes: range
+) -> list[NDArray[Any]]:
+    """Return coefficients of nD maximal overlap DWT over `axes`."""
+    coeffs = [data]
+    for axis in axes:
+        new_coeffs = []
+        for coeff in coeffs:
+            new_coeffs.extend(_modwt_1d(coeff, level, axis))
+        coeffs = new_coeffs
+    return coeffs
+
+
+def _imodwt_nd(
+    coeffs: list[NDArray[Any]], level: int, axes: range
+) -> NDArray[Any]:
+    """Return inverse nD maximal overlap DWT from coefficients."""
+    for axis in reversed(axes):
+        coeffs = [
+            _imodwt_1d(approx, detail, level, axis)
+            for approx, detail in zip(coeffs[0::2], coeffs[1::2], strict=True)
+        ]
+    return coeffs[0]
+
+
+def _pawflim(
+    data: NDArray[Any],
+    /,
+    *,
+    n_sigmas: float,
+    levels: int,
+    num_threads: int = 1,
+) -> NDArray[Any]:
+    """Return pawFLIM wavelet-denoised Fourier coefficients.
+
+    This is a NumPy and Cython reimplementation of the ``pawflim`` function
+    from the pawFLIM library, removing the dependency on ``pawflim`` and
+    ``binlets``.
+
+    Parameters
+    ----------
+    data : ndarray of complex128
+        Fourier coefficients, not normalized phasor coordinates, where the
+        first axis contains harmonics ``(0, n, 2n)`` and the remaining axes
+        are spatial. The n-th phasor is ``data[1] / data[0]``.
+    n_sigmas : float
+        Significance level to test the difference between two phasors,
+        given in terms of the equivalent 1D standard deviations.
+    levels : int
+        Number of levels for the wavelet decomposition.
+    num_threads : int, optional, default: 1
+        Number of OpenMP threads to use for parallelization.
+
+    Returns
+    -------
+    ndarray of complex128
+        Denoised Fourier coefficients with the same shape as `data`.
+
+    """
+    # significance threshold of the squared Mahalanobis distance for a
+    # bivariate normal distribution, equivalent to `n_sigmas` standard
+    # deviations of a univariate normal distribution. This equals
+    # `scipy.stats.chi2.ppf(scipy.stats.chi.cdf(n_sigmas, 1), 2)`.
+    threshold = -2.0 * math.log(1.0 - math.erf(n_sigmas / math.sqrt(2.0)))
+
+    axes = range(1, data.ndim)
+    spatial_shape = data.shape[1:]
+    size = data[0].size
+
+    # maximal overlap DWT decomposition, accumulating coefficients per level
+    approx = data
+    coeffs_per_level = []
+    for level in range(levels):
+        coeffs = _modwt_nd(approx, level, axes)
+        approx = coeffs[0]
+        coeffs_per_level.append(coeffs)
+
+    # threshold detail coefficients using the phasor difference test.
+    # The mask of each detail is eroded and intersected across levels, so
+    # that a detail is only zeroed where all coarser tests also passed.
+    num_details = (1 << len(axes)) - 1
+    masks = [
+        numpy.ones(spatial_shape, dtype=numpy.uint8)
+        for _ in range(num_details)
+    ]
+    for level, coeffs in enumerate(coeffs_per_level):
+        approx = coeffs[0]
+        shift = -(1 << level)
+        for index, detail in enumerate(coeffs[1:]):
+            # erode the running mask by the wavelet support, then keep only
+            # pixels where the two reconstructed phasors are indistinct
+            mask = masks[index]
+            for axis in range(mask.ndim):
+                mask &= numpy.roll(mask, shift, axis=axis)
+            left, right = _undo_1d_modwt(approx, detail)
+            _phasor_filter_pawflim(
+                mask.reshape(-1),
+                numpy.ascontiguousarray(left.reshape(3, size)),
+                numpy.ascontiguousarray(right.reshape(3, size)),
+                threshold,
+                num_threads,
+            )
+            detail[:, mask.view(bool)] = 0
+
+    # maximal overlap DWT reconstruction
+    for level, coeffs in reversed(list(enumerate(coeffs_per_level))):
+        coeffs[0] = approx
+        approx = _imodwt_nd(coeffs, level, axes)
+    return approx
 
 
 def phasor_threshold(

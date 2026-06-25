@@ -154,7 +154,6 @@ def versions(
         'matplotlib',
         'mkl_fft',
         'pandas',
-        'pawflim',
         'pooch',
         'scipy',
         'sdtfile',

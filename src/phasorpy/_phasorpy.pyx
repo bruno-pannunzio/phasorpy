@@ -2679,6 +2679,125 @@ def _signal_denoise_vector(
 # Filtering functions
 
 
+def _phasor_filter_pawflim(
+    uint8_t[::1] mask,
+    const double complex[:, ::1] left,
+    const double complex[:, ::1] right,
+    const double threshold,
+    const int num_threads,
+):
+    """Update mask in place with pawFLIM phasor difference test.
+
+    The `mask` is set to zero where the squared Mahalanobis distance between
+    the two phasors `left` and `right` is not smaller than `threshold`.
+    Pixels where `mask` is already zero are left unchanged.
+
+    Parameters
+    ----------
+    mask : 1D memoryview of uint8
+        Writable buffer of one dimension containing the per-pixel mask,
+        updated in place.
+    left : 2D memoryview of complex128
+        Buffer of two dimensions containing the Fourier coefficients of
+        the first phasor to compare:
+
+        0. harmonics (0, n, and 2n)
+        1. pixels flat
+
+    right : 2D memoryview of complex128
+        Buffer of two dimensions containing the Fourier coefficients of
+        the second phasor to compare. Same layout as `left`.
+    threshold : double
+        Significance threshold on the squared Mahalanobis distance.
+    num_threads : int
+        Number of OpenMP threads to use for parallelization.
+
+    Notes
+    -----
+    The covariance of each phasor is estimated from the zeroth, n-th, and
+    2n-th Fourier coefficients as described in [1]_. The distance between
+    the two phasors is the quadratic form of their difference weighted by
+    the inverse of the summed 2x2 covariance matrices.
+
+    """
+    cdef:
+        ssize_t size = mask.shape[0]
+        ssize_t i
+        double x0, y0
+        double xr1, xi1, xr2, xi2
+        double yr1, yi1, yr2, yi2
+        double ax, bx, dx, ay, by, dy
+        double a, b, d, det, vr, vi, num, dist
+
+    if left.shape[0] != 3 or right.shape[0] != 3:
+        raise ValueError('left and right must have three harmonics')
+    if left.shape[1] != size or right.shape[1] != size:
+        raise ValueError('mask and phasor shape mismatch')
+
+    with nogil, parallel(num_threads=num_threads):
+
+        for i in prange(size):
+            if mask[i] == 0:
+                # already masked out; distance test cannot turn it back on
+                continue
+
+            # phasor and covariance of the first coefficients
+            x0 = left[0, i].real
+            if x0 > 0.0:
+                xr1 = left[1, i].real / x0
+                xi1 = left[1, i].imag / x0
+                xr2 = left[2, i].real / x0
+                xi2 = left[2, i].imag / x0
+                ax = (1.0 + xr2 - 2.0 * xr1 * xr1) / (2.0 * x0)
+                dx = (1.0 - xr2 - 2.0 * xi1 * xi1) / (2.0 * x0)
+                bx = (xi2 - 2.0 * xr1 * xi1) / (2.0 * x0)
+            else:
+                # zeroth harmonic not positive; identity covariance
+                xr1 = 0.0
+                xi1 = 0.0
+                ax = 1.0
+                dx = 1.0
+                bx = 0.0
+
+            # phasor and covariance of the second coefficients
+            y0 = right[0, i].real
+            if y0 > 0.0:
+                yr1 = right[1, i].real / y0
+                yi1 = right[1, i].imag / y0
+                yr2 = right[2, i].real / y0
+                yi2 = right[2, i].imag / y0
+                ay = (1.0 + yr2 - 2.0 * yr1 * yr1) / (2.0 * y0)
+                dy = (1.0 - yr2 - 2.0 * yi1 * yi1) / (2.0 * y0)
+                by = (yi2 - 2.0 * yr1 * yi1) / (2.0 * y0)
+            else:
+                yr1 = 0.0
+                yi1 = 0.0
+                ay = 1.0
+                dy = 1.0
+                by = 0.0
+
+            # summed covariance and phasor difference
+            a = ax + ay
+            b = bx + by
+            d = dx + dy
+            vr = xr1 - yr1
+            vi = xi1 - yi1
+
+            # squared Mahalanobis distance using the 2x2 matrix inverse;
+            # if the determinant is zero, use the unscaled adjugate as in
+            # the reference implementation
+            det = a * d - b * b
+            num = d * vr * vr - 2.0 * b * vr * vi + a * vi * vi
+            if det != 0.0:
+                dist = num / det
+            else:
+                dist = num
+
+            # NaN distances compare false and mask out the pixel
+            if not (dist < threshold):
+                mask[i] = 0
+
+
 cdef float_t _median(
     float_t* values,
     const ssize_t size
